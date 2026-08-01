@@ -219,7 +219,8 @@ class MultiScaleSpatialMixer(nn.Module):
     """
 
     def __init__(self, dim, depth, heads, dim_head, mlp_dim,
-                 dropout=0., attn_dropout=0., drop_path=0.1, merge_size=2):
+                 dropout=0., attn_dropout=0., drop_path=0.1, merge_size=2,
+                 coarse_transformer=None):
         super().__init__()
         self.merge_size = merge_size
 
@@ -227,9 +228,13 @@ class MultiScaleSpatialMixer(nn.Module):
         self.spatial_reduce = nn.Conv2d(dim, dim,
                                         kernel_size=merge_size,
                                         stride=merge_size)
-        self.coarse_transformer = GatedTransformer(
-            dim, depth, heads, dim_head, mlp_dim,
-            dropout, attn_dropout, drop_path)
+        # Allow sharing the coarse transformer across spatial branches to save memory.
+        if coarse_transformer is not None:
+            self.coarse_transformer = coarse_transformer
+        else:
+            self.coarse_transformer = GatedTransformer(
+                dim, depth, heads, dim_head, mlp_dim,
+                dropout, attn_dropout, drop_path)
 
         # ---- Fine branch (same as original spatial block) ----
         self.fine_transformer = GatedTransformer(

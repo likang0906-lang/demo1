@@ -29,13 +29,22 @@ class PredFormerLayer(nn.Module):
             dim, depth, heads, dim_head, mlp_dim,
             dropout, attn_dropout, drop_path)
 
-        # Spatial mixers — multi-scale (coarse + fine pyramid)
+        # Shared coarse transformer — both spatial branches need the same
+        # global spatial context, so sharing saves ~50% of coarse params.
+        _shared_coarse = GatedTransformer(
+            dim, depth, heads, dim_head, mlp_dim,
+            dropout, attn_dropout, drop_path)
+
+        # Spatial mixers — each has its own fine branch + gate,
+        # but shares the coarse transformer.
         self.ts_space_transformer = MultiScaleSpatialMixer(
             dim, depth, heads, dim_head, mlp_dim,
-            dropout, attn_dropout, drop_path, merge_size)
+            dropout, attn_dropout, drop_path, merge_size,
+            coarse_transformer=_shared_coarse)
         self.st_space_transformer = MultiScaleSpatialMixer(
             dim, depth, heads, dim_head, mlp_dim,
-            dropout, attn_dropout, drop_path, merge_size)
+            dropout, attn_dropout, drop_path, merge_size,
+            coarse_transformer=_shared_coarse)
 
     def forward(self, x):
         b, t, n, _ = x.shape
