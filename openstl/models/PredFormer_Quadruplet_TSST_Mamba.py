@@ -43,9 +43,10 @@ class GatedTransformer(nn.Module):
 
 
 class TemporalMambaMixer(nn.Module):
+    """Thin wrapper so the Mamba block can slot into the same call signature
+    as GatedTransformer inside PredFormerLayer."""
     def __init__(self, dim, dropout=0.0):
         super().__init__()
-        self.norm = nn.LayerNorm(dim)
         self.mamba = TemporalMambaBlock(dim, dropout=dropout)
 
     def forward(self, x):
@@ -66,36 +67,34 @@ class PredFormerLayer(nn.Module):
 
     def forward(self, x):
         b, t, n, _ = x.shape
-        x_ts, x_ori = x, x
 
-        # ts-t branch: temporal Mamba over time axis
-        x_ts = rearrange(x_ts, 'b t n d -> b n t d')
-        x_ts = rearrange(x_ts, 'b n t d -> (b n) t d')
-        x_ts = self.ts_temporal_mamba(x_ts)
+        # ---- Time-Space branch ----
+        # ts-t: temporal Mamba over time axis
+        x = rearrange(x, 'b t n d -> b n t d')
+        x = rearrange(x, 'b n t d -> (b n) t d')
+        x = self.ts_temporal_mamba(x)
 
-        # ts-s branch: spatial transformer
-        x_ts = rearrange(x_ts, '(b n) t d -> b n t d', b=b)
-        x_ts = rearrange(x_ts, 'b n t d -> b t n d')
-        x_ts = rearrange(x_ts, 'b t n d -> (b t) n d')
-        x_ts = self.ts_space_transformer(x_ts)
+        # ts-s: spatial transformer
+        x = rearrange(x, '(b n) t d -> b n t d', b=b)
+        x = rearrange(x, 'b n t d -> b t n d')
+        x = rearrange(x, 'b t n d -> (b t) n d')
+        x = self.ts_space_transformer(x)
+        x = rearrange(x, '(b t) n d -> b t n d', b=b)
 
-        x_ts = rearrange(x_ts, '(b t) n d -> b t n d', b=b)
+        # ---- Space-Time branch ----
+        # st-s: spatial transformer
+        x = rearrange(x, 'b t n d -> (b t) n d')
+        x = self.st_space_transformer(x)
 
-        x_st, x_ori = x_ts, x_ts
+        # st-t: temporal Mamba over time axis
+        x = rearrange(x, '(b t) ... -> b t ...', b=b)
+        x = x.permute(0, 2, 1, 3)
+        x = rearrange(x, 'b n t d -> (b n) t d')
+        x = self.st_temporal_mamba(x)
 
-        # st-s branch: spatial transformer
-        x_st = rearrange(x_st, 'b t n d -> (b t) n d')
-        x_st = self.st_space_transformer(x_st)
-
-        # st-t branch: temporal Mamba over time axis
-        x_st = rearrange(x_st, '(b t) ... -> b t ...', b=b)
-        x_st = x_st.permute(0, 2, 1, 3)
-        x_st = rearrange(x_st, 'b n t d -> (b n) t d')
-        x_st = self.st_temporal_mamba(x_st)
-
-        x_st = rearrange(x_st, '(b n) t d -> b n t d', b=b)
-        x_st = rearrange(x_st, 'b n t d -> b t n d', b=b)
-        return x_st
+        x = rearrange(x, '(b n) t d -> b n t d', b=b)
+        x = rearrange(x, 'b n t d -> b t n d', b=b)
+        return x
 
 
 def sinusoidal_embedding(n_channels, dim):

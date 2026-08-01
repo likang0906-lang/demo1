@@ -1,5 +1,5 @@
-from .PredFormer_modules import Attention, PreNorm, FeedForward, TemporalMambaBlock
+from .PredFormer_modules import Attention, PreNorm, FeedForward, TemporalMambaBlock, MultiScaleSpatialMixer
 
 __all__ = [
-    'Attention','PreNorm','FeedForward','TemporalMambaBlock'
+    'Attention', 'PreNorm', 'FeedForward', 'TemporalMambaBlock', 'MultiScaleSpatialMixer'
 ]
