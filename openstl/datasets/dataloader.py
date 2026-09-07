@@ -45,5 +45,8 @@ def load_data(dataname, batch_size, val_batch_size, num_workers, data_root, dist
                 data_split = k
         return load_data(batch_size, val_batch_size, data_root, num_workers,
                          distributed=dist, data_split=data_split, **kwargs)
+    elif 'npy' in dataname:  # custom per-sample .npy dataset
+        from .dataloader_npy import load_data
+        return load_data(batch_size, val_batch_size, data_root, num_workers, **cfg_dataloader)
     else:
         raise ValueError(f'Dataname {dataname} is unsupported')
