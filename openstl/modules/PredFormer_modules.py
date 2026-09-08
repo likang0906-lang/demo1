@@ -106,9 +106,9 @@ class GatedTransformer(nn.Module):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
-    def forward(self, x):
+    def forward(self, x, bias=None):
         for attn, ff, drop_path1, drop_path2 in self.layers:
-            x = x + drop_path1(attn(x))
+            x = x + drop_path1(attn(x, bias=bias))
             x = x + drop_path2(ff(x))
         return self.norm(x)
 
@@ -187,11 +187,15 @@ class Attention(nn.Module):
             nn.Dropout(dropout)
         ) if project_out else nn.Identity()
 
-    def forward(self, x):
+    def forward(self, x, bias=None):
         b, n, _, h = *x.shape, self.heads
         qkv = self.to_qkv(x).chunk(3, dim=-1)
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h=h), qkv)
         dots = einsum('b h i d, b h j d -> b h i j', q, k) * self.scale
+
+        if bias is not None:
+            # bias: (b, 1, 1, n) or broadcastable to (b, h, n, n)
+            dots = dots + bias
 
         attn = dots.softmax(dim=-1)
 
@@ -364,4 +368,74 @@ class SpatialViLBlock(nn.Module):
 
         x = self.dropout(self.out_proj(h))
         return residual + x
+
+
+class FlowEstimator(nn.Module):
+    """Lightweight correlation-based flow estimator in embedding space.
+
+    For each patch position, computes the normalized cross-correlation
+    between its embedding at frame t and the embeddings of neighbouring
+    positions at frame t+1, then produces a soft flow vector as the
+    score-weighted average of offsets (FlowNet-C style correlation, but
+    fully differentiable and operating on latent patch features).
+
+    No external optical-flow dependency; the flow is task-adapted.
+
+    Args:
+        dim:         embedding dimension
+        search_range: max displacement in patch units (each direction)
+    """
+
+    def __init__(self, dim, search_range=3):
+        super().__init__()
+        self.r = search_range
+        self.norm = nn.LayerNorm(dim)
+        self.temp = nn.Parameter(torch.tensor(1.0))
+
+        # Offsets in unfold row-major order: (-r,-r), (-r,-r+1), ..., (r,r)
+        _ks = 2 * search_range + 1
+        self.register_buffer(
+            'offsets',
+            torch.tensor([[i // _ks - search_range, i % _ks - search_range]
+                          for i in range(_ks * _ks)], dtype=torch.float32))
+
+    def forward(self, x, H, W):
+        """Estimate flow between consecutive frames.
+
+        Args:
+            x:  (B, T, N, D)  content patch embeddings (pre-positional)
+            H:  int, patch-grid height
+            W:  int, patch-grid width
+        Returns:
+            flow:     (B, T-1, N, 2)  displacement in patch units
+            flow_mag: (B, T, N)       magnitude per patch per frame
+                                      (last frame repeats the previous)
+        """
+        B, T, N, D = x.shape
+        x = self.norm(x)                                  # cosine similarity
+        x = x.view(B, T, H, W, D).permute(0, 1, 4, 2, 3)  # (B, T, D, H, W)
+
+        ks = 2 * self.r + 1
+        flow_list = []
+        for t in range(T - 1):
+            a = x[:, t]                                   # (B, D, H, W)
+            b = x[:, t + 1]
+
+            # All shifted copies of b: (B, D*K, N) → (B, K, N, D)
+            b_nbr = F.unfold(b, kernel_size=ks, padding=self.r)
+            b_nbr = b_nbr.view(B, D, ks * ks, N).permute(0, 2, 3, 1)
+
+            a_flat = a.flatten(2).transpose(1, 2)         # (B, N, D)
+            sim = einsum('b n d, b k n d -> b k n', a_flat, b_nbr) * (D ** -0.5)
+            w = torch.softmax(sim * self.temp, dim=1)     # (B, K, N)
+
+            flow = einsum('b k n, k c -> b n c', w, self.offsets)  # (B, N, 2)
+            flow_list.append(flow)
+
+        flow = torch.stack(flow_list, dim=1)              # (B, T-1, N, 2)
+
+        # Magnitude; last frame reuses the previous flow magnitude
+        flow_mag = flow.norm(dim=-1)                      # (B, T-1, N)
+        flow_mag = F.pad(flow_mag, (0, 0, 0, 1), mode='replicate')
+        return flow, flow_mag
 
