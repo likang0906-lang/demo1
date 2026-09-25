@@ -1,3 +1,4 @@
+import math
 import torch
 from torch import nn, einsum
 import torch.nn.functional as F
@@ -438,4 +439,51 @@ class FlowEstimator(nn.Module):
         flow_mag = flow.norm(dim=-1)                      # (B, T-1, N)
         flow_mag = F.pad(flow_mag, (0, 0, 0, 1), mode='replicate')
         return flow, flow_mag
+
+
+class CNNStem(nn.Module):
+    """Overlapped convolutional tokenization (replaces patch embedding).
+
+    A stride-1 smoothing conv followed by ``log2(downsample)`` stride-2
+    3x3 convs downsamples each frame by ``downsample`` (= patch_size).
+    Produces the same token grid as non-overlapping patches, but each
+    token sees an overlapping receptive field roughly 2x the patch size
+    (e.g. 17x17 px for patch_size=8) -- eliminating the hard patch
+    boundaries that cause grid artifacts in predicted frames.
+
+    Args:
+        in_channels: image channels (C)
+        dim:         token embedding dimension
+        downsample:  spatial reduction factor (must be a power of 2);
+                     set equal to patch_size to keep token count identical
+                     to the original patch embedding
+    """
+
+    def __init__(self, in_channels, dim, downsample=8):
+        super().__init__()
+        n_stages = int(round(math.log2(downsample)))
+        assert 2 ** n_stages == downsample, \
+            'downsample must be a power of 2 (got %d)' % downsample
+
+        layers = []
+        c_in = in_channels
+        # Stride-1 smoothing layer: softens pixel noise before downsampling
+        c_mid = max(dim // 4, 32)
+        layers += [nn.Conv2d(c_in, c_mid, 3, stride=1, padding=1), nn.GELU()]
+        c_in = c_mid
+        for i in range(n_stages):
+            c_out = dim if i == n_stages - 1 else min(max(c_in * 2, 32), dim)
+            layers += [nn.Conv2d(c_in, c_out, 3, stride=2, padding=1), nn.GELU()]
+            c_in = c_out
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x):
+        """Forward pass.
+
+        Args:
+            x:  (B*T, C, H, W)  frames
+        Returns:
+            (B*T, dim, H/downsample, W/downsample)
+        """
+        return self.net(x)
 
