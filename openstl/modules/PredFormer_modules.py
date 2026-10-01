@@ -76,6 +76,22 @@ class SwiGLU(nn.Module):
         return x
 
 
+class LayerScale(nn.Module):
+    """Per-channel residual scaling (CaiT 2021).
+
+    A small learnable per-channel gain applied to a residual branch.
+    Initialized near zero (e.g. 0.1) it dampens updates and stabilizes
+    training at high learning rates.
+    """
+
+    def __init__(self, dim, init=0.1):
+        super().__init__()
+        self.gamma = nn.Parameter(torch.ones(dim) * init)
+
+    def forward(self, x):
+        return x * self.gamma
+
+
 class GatedTransformer(nn.Module):
     """Standard gated transformer block: PreNorm → Attention → PreNorm → SwiGLU.
 
@@ -102,10 +118,8 @@ class GatedTransformer(nn.Module):
                 PreNorm(dim, SwiGLU(dim, mlp_dim, drop=dropout)),
                 DropPath(drop_path) if drop_path > 0. else nn.Identity(),
                 DropPath(drop_path) if drop_path > 0. else nn.Identity(),
-                nn.Parameter(torch.ones(dim) * layer_scale_init)
-                if layer_scale_init > 0 else None,
-                nn.Parameter(torch.ones(dim) * layer_scale_init)
-                if layer_scale_init > 0 else None,
+                LayerScale(dim, layer_scale_init) if layer_scale_init > 0 else nn.Identity(),
+                LayerScale(dim, layer_scale_init) if layer_scale_init > 0 else nn.Identity(),
             ]))
         self.apply(self._init_weights)
 
@@ -120,8 +134,8 @@ class GatedTransformer(nn.Module):
 
     def forward(self, x, bias=None):
         for attn, ff, drop_path1, drop_path2, ls_attn, ls_ff in self.layers:
-            x = x + drop_path1(attn(x, bias=bias)) * (ls_attn if ls_attn is not None else 1.0)
-            x = x + drop_path2(ff(x)) * (ls_ff if ls_ff is not None else 1.0)
+            x = x + drop_path1(ls_attn(attn(x, bias=bias)))
+            x = x + drop_path2(ls_ff(ff(x)))
         return self.norm(x)
 
 
