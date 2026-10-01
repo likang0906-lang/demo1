@@ -18,24 +18,34 @@ from openstl.modules import GatedTransformer, CNNStem
 
 
 class PredFormerLayer(nn.Module):
-    """Quadruplet TSST layer — identical to the original PredFormer."""
+    """Quadruplet TSST layer with LayerScale stabilization.
+
+    LayerScale (init 0.1) dampens residual-branch updates, keeping the
+    encoder stable through the OneCycle LR peak where the naive variant
+    collapses to mean-frame prediction.
+    """
 
     def __init__(self, dim, depth, heads, dim_head, mlp_dim,
-                 dropout=0., attn_dropout=0., drop_path=0.1):
+                 dropout=0., attn_dropout=0., drop_path=0.1,
+                 layer_scale_init=0.1):
         super(PredFormerLayer, self).__init__()
 
         self.ts_temporal_transformer = GatedTransformer(
             dim, depth, heads, dim_head, mlp_dim,
-            dropout, attn_dropout, drop_path)
+            dropout, attn_dropout, drop_path,
+            layer_scale_init=layer_scale_init)
         self.ts_space_transformer = GatedTransformer(
             dim, depth, heads, dim_head, mlp_dim,
-            dropout, attn_dropout, drop_path)
+            dropout, attn_dropout, drop_path,
+            layer_scale_init=layer_scale_init)
         self.st_space_transformer = GatedTransformer(
             dim, depth, heads, dim_head, mlp_dim,
-            dropout, attn_dropout, drop_path)
+            dropout, attn_dropout, drop_path,
+            layer_scale_init=layer_scale_init)
         self.st_temporal_transformer = GatedTransformer(
             dim, depth, heads, dim_head, mlp_dim,
-            dropout, attn_dropout, drop_path)
+            dropout, attn_dropout, drop_path,
+            layer_scale_init=layer_scale_init)
 
     def forward(self, x):
         b, t, n, _ = x.shape

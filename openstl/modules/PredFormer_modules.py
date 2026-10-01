@@ -81,10 +81,17 @@ class GatedTransformer(nn.Module):
 
     With stochastic depth (DropPath) applied after each sub-block.
     Used as the basic building block for both spatial and temporal mixing.
+
+    Args:
+        layer_scale_init: initial value of per-channel residual scaling
+            (LayerScale, CaiT 2021).  0.0 disables LayerScale (default,
+            backward compatible); e.g. 0.1 dampens residual updates and
+            stabilizes training at high learning rates.
     """
 
     def __init__(self, dim, depth, heads, dim_head, mlp_dim,
-                 dropout=0., attn_dropout=0., drop_path=0.1):
+                 dropout=0., attn_dropout=0., drop_path=0.1,
+                 layer_scale_init=0.):
         super().__init__()
         self.layers = nn.ModuleList([])
         self.norm = nn.LayerNorm(dim)
@@ -94,7 +101,11 @@ class GatedTransformer(nn.Module):
                                        dropout=attn_dropout)),
                 PreNorm(dim, SwiGLU(dim, mlp_dim, drop=dropout)),
                 DropPath(drop_path) if drop_path > 0. else nn.Identity(),
-                DropPath(drop_path) if drop_path > 0. else nn.Identity()
+                DropPath(drop_path) if drop_path > 0. else nn.Identity(),
+                nn.Parameter(torch.ones(dim) * layer_scale_init)
+                if layer_scale_init > 0 else None,
+                nn.Parameter(torch.ones(dim) * layer_scale_init)
+                if layer_scale_init > 0 else None,
             ]))
         self.apply(self._init_weights)
 
@@ -108,9 +119,9 @@ class GatedTransformer(nn.Module):
             nn.init.constant_(m.weight, 1.0)
 
     def forward(self, x, bias=None):
-        for attn, ff, drop_path1, drop_path2 in self.layers:
-            x = x + drop_path1(attn(x, bias=bias))
-            x = x + drop_path2(ff(x))
+        for attn, ff, drop_path1, drop_path2, ls_attn, ls_ff in self.layers:
+            x = x + drop_path1(attn(x, bias=bias)) * (ls_attn if ls_attn is not None else 1.0)
+            x = x + drop_path2(ff(x)) * (ls_ff if ls_ff is not None else 1.0)
         return self.norm(x)
 
 
@@ -467,13 +478,17 @@ class CNNStem(nn.Module):
 
         layers = []
         c_in = in_channels
-        # Stride-1 smoothing layer: softens pixel noise before downsampling
+        # Stride-1 smoothing layer: softens pixel noise before downsampling.
+        # GroupNorm after every conv keeps activation statistics bounded,
+        # preventing feature-scale explosion at high learning rates.
         c_mid = max(dim // 4, 32)
-        layers += [nn.Conv2d(c_in, c_mid, 3, stride=1, padding=1), nn.GELU()]
+        layers += [nn.Conv2d(c_in, c_mid, 3, stride=1, padding=1),
+                   nn.GroupNorm(min(8, c_mid), c_mid), nn.GELU()]
         c_in = c_mid
         for i in range(n_stages):
             c_out = dim if i == n_stages - 1 else min(max(c_in * 2, 32), dim)
-            layers += [nn.Conv2d(c_in, c_out, 3, stride=2, padding=1), nn.GELU()]
+            layers += [nn.Conv2d(c_in, c_out, 3, stride=2, padding=1),
+                       nn.GroupNorm(min(8, c_out), c_out), nn.GELU()]
             c_in = c_out
         self.net = nn.Sequential(*layers)
 
