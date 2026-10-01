@@ -493,16 +493,17 @@ class CNNStem(nn.Module):
         layers = []
         c_in = in_channels
         # Stride-1 smoothing layer: softens pixel noise before downsampling.
-        # GroupNorm after every conv keeps activation statistics bounded,
-        # preventing feature-scale explosion at high learning rates.
+        # NOTE: no normalization layers inside the stem -- inserting
+        # GroupNorm would change the statistics seen by downstream conv
+        # weights and break fine-tuned checkpoints.  Stability at high LR
+        # is instead provided by LayerScale in the encoder plus a lower
+        # peak learning rate and gradient clipping.
         c_mid = max(dim // 4, 32)
-        layers += [nn.Conv2d(c_in, c_mid, 3, stride=1, padding=1),
-                   nn.GroupNorm(min(8, c_mid), c_mid), nn.GELU()]
+        layers += [nn.Conv2d(c_in, c_mid, 3, stride=1, padding=1), nn.GELU()]
         c_in = c_mid
         for i in range(n_stages):
             c_out = dim if i == n_stages - 1 else min(max(c_in * 2, 32), dim)
-            layers += [nn.Conv2d(c_in, c_out, 3, stride=2, padding=1),
-                       nn.GroupNorm(min(8, c_out), c_out), nn.GELU()]
+            layers += [nn.Conv2d(c_in, c_out, 3, stride=2, padding=1), nn.GELU()]
             c_in = c_out
         self.net = nn.Sequential(*layers)
 
